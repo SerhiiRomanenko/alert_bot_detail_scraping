@@ -1,678 +1,3 @@
-// require("dotenv").config();
-
-// const { Telegraf } = require("telegraf");
-// const { TelegramClient } = require("telegram");
-// const { StringSession } = require("telegram/sessions");
-// const input = require("input");
-// const Groq = require("groq-sdk");
-// const express = require("express");
-// const { Redis } = require("@upstash/redis");
-
-// const {
-//   BOT_TOKEN,
-//   GROQ_API_KEY,
-//   OPENROUTER_API_KEY,
-//   API_ID,
-//   API_HASH,
-//   PORT,
-//   SESSION,
-//   UPSTASH_REDIS_REST_URL,
-//   UPSTASH_REDIS_REST_TOKEN,
-//   WAR_SOURCE_CHANNEL,
-//   WAR_TARGET_CHANNEL,
-//   WAR_CHECK_INTERVAL,
-// } = process.env;
-
-// const bot = new Telegraf(BOT_TOKEN);
-// const groq = new Groq({ apiKey: GROQ_API_KEY });
-
-// const redis = new Redis({
-//   url: UPSTASH_REDIS_REST_URL,
-//   token: UPSTASH_REDIS_REST_TOKEN,
-// });
-// console.log("GROQ KEY:", process.env.GROQ_API_KEY ? "Є" : "НЕМАЄ");
-// let tgClient;
-
-// // ======================
-// // 📡 TELEGRAM CLIENT
-// // ======================
-
-// async function initClient() {
-//   const client = new TelegramClient(
-//     new StringSession(SESSION || ""),
-//     Number(API_ID),
-//     API_HASH,
-//     {
-//       connectionRetries: 5,
-//     }
-//   );
-
-//   await client.start({
-//     phoneNumber: async () => await input.text("📱 Phone: "),
-//     password: async () => await input.text("🔐 2FA: "),
-//     phoneCode: async () => await input.text("📩 Code: "),
-//     onError: (err) => console.log("❌ Telegram:", err),
-//   });
-
-//   console.log("✅ Telegram connected");
-// console.log("✅ Telegram session loaded");
-
-//   return client;
-// }
-
-// // ======================
-// // 🖼 MEDIA
-// // ======================
-
-// async function getImages(client, messages) {
-//   const images = [];
-
-//   for (const msg of messages) {
-//     try {
-//       let media;
-
-//       if (msg.photo) {
-//         media = msg.photo;
-//       } else if (msg.media?.photo) {
-//         media = msg.media.photo;
-//       } else if (msg.media?.document) {
-//         const mime = msg.media.document.mimeType || "";
-
-//         if (mime.startsWith("image/")) {
-//           media = msg.media.document;
-//         }
-//       }
-
-//       if (media) {
-//         const buffer = await client.downloadMedia(media);
-
-//         if (buffer) {
-//           images.push(buffer);
-//         }
-//       }
-//     } catch (e) {
-//       console.log(`[ERROR] Download media: ${e.message}`);
-//     }
-//   }
-
-//   return images;
-// }
-
-// // ======================
-// // ⚠️ WAR MONITOR
-// // ======================
-
-// const SOURCE_CHAT = WAR_SOURCE_CHANNEL || "war_monitor";
-// const TARGET_CHAT = WAR_TARGET_CHANNEL || "xybc_live";
-
-// const WAR_SYSTEM_PROMPT = `
-// Ти модератор локального Telegram-каналу Білої Церкви.
-
-// Твоє завдання — визначити, чи стосується надане повідомлення безпосередньо Білої Церкви, Білоцерківської громади, Білоцерківського району або безпосередньої загрози для Білої Церкви.
-
-// Вважати релевантним (YES):
-
-// - Біла Церква
-// - Білоцерківська громада
-// - Білоцерківський район
-// - Події безпосередньо у Білій Церкві
-// - Повітряні тривоги у Білій Церкві
-// - Вибухи у Білій Церкві
-// - Робота ППО над Білою Церквою
-// - Ракети/БпЛА, що рухаються на Білу Церкву
-// - Безпосередня загроза для Білої Церкви
-// - Наслідки ударів у Білій Церкві
-// - Події, що безпосередньо стосуються мешканців Білої Церкви
-// - Населені пункти Білоцерківської громади/району, якщо подія стосується їх
-
-// НЕ вважати релевантним (NO):
-
-// - Київ загалом
-// - Київська область загалом без конкретного зв'язку з Білою Церквою
-// - Україна загалом
-// - Інші міста/райони Київської області
-// - "ППО працює в Київській області" без згадки Білої Церкви
-// - "Тривога по всій Київській області" без конкретики
-
-// Відповідай ТІЛЬКИ одним словом: YES або NO.
-// `;
-
-// // ======================
-// // 🤖 AI CLASSIFICATION
-// // ======================
-
-// async function classifyWarMessage(text) {
-//   // ======================
-//   // 🤖 GROQ — ОСНОВНИЙ
-//   // ======================
-
-//   console.log(
-//     "[AI] GROQ_API_KEY:",
-//     GROQ_API_KEY ? "Є" : "НЕМАЄ"
-//   );
-
-//   if (GROQ_API_KEY) {
-//     try {
-//       console.log("[AI] Запит до Groq...");
-
-//       const completion = await groq.chat.completions.create({
-//         model: "llama-3.3-70b-versatile",
-
-//         messages: [
-//           {
-//             role: "system",
-//             content: WAR_SYSTEM_PROMPT,
-//           },
-//           {
-//             role: "user",
-//             content: text,
-//           },
-//         ],
-
-//         temperature: 0.1,
-//         max_tokens: 8,
-//       });
-
-//       const answer =
-//         completion.choices?.[0]?.message?.content
-//           ?.trim()
-//           ?.toUpperCase();
-
-//       console.log("[AI] Groq відповідь:", answer);
-
-//       if (answer === "YES" || answer === "NO") {
-//         return answer;
-//       }
-
-//       console.log(
-//         "[AI] Groq повернув не YES/NO — переходимо на OpenRouter"
-//       );
-
-//     } catch (e) {
-//       console.log(
-//         "[ERROR] Groq:",
-//         e.message
-//       );
-
-//       if (e.response?.data) {
-//         console.log(
-//           "[ERROR] Groq details:",
-//           e.response.data
-//         );
-//       }
-//     }
-//   } else {
-//     console.log(
-//       "[AI] GROQ_API_KEY відсутній — переходимо на OpenRouter"
-//     );
-//   }
-
-//   // ======================
-//   // 🌐 OPENROUTER — FALLBACK
-//   // ======================
-
-//   if (OPENROUTER_API_KEY) {
-//     try {
-//       console.log(
-//         "[AI] Запит до OpenRouter..."
-//       );
-
-//       const response = await fetch(
-//         "https://openrouter.ai/api/v1/chat/completions",
-//         {
-//           method: "POST",
-
-//           headers: {
-//             "Content-Type": "application/json",
-//             Authorization:
-//               `Bearer ${OPENROUTER_API_KEY}`,
-//           },
-
-//           body: JSON.stringify({
-//             model:
-//               "meta-llama/llama-3.3-70b-instruct",
-
-//             messages: [
-//               {
-//                 role: "system",
-//                 content: WAR_SYSTEM_PROMPT,
-//               },
-//               {
-//                 role: "user",
-//                 content: text,
-//               },
-//             ],
-
-//             temperature: 0.1,
-//             max_tokens: 8,
-//           }),
-//         }
-//       );
-
-//       if (!response.ok) {
-//         const errorText = await response.text();
-
-//         throw new Error(
-//           `HTTP ${response.status}: ${errorText}`
-//         );
-//       }
-
-//       const data = await response.json();
-
-//       const answer =
-//         data.choices?.[0]?.message?.content
-//           ?.trim()
-//           ?.toUpperCase();
-
-//       console.log(
-//         "[AI] OpenRouter відповідь:",
-//         answer
-//       );
-
-//       if (answer === "YES" || answer === "NO") {
-//         return answer;
-//       }
-
-//     } catch (e) {
-//       console.log(
-//         "[ERROR] OpenRouter:",
-//         e.message
-//       );
-//     }
-//   }
-
-//   console.log(
-//     "[ERROR] Обидва AI недоступні"
-//   );
-
-//   return null;
-// }
-
-// // ======================
-// // 💾 REDIS
-// // ======================
-
-// async function warGetLastId() {
-//   try {
-//     const val = await redis.get("war_monitor:last_message_id");
-
-//     return val ? Number(val) : 0;
-//   } catch (e) {
-//     console.log(`[ERROR] Redis read: ${e.message}`);
-
-//     return 0;
-//   }
-// }
-
-// async function warSaveLastId(id) {
-//   try {
-//     await redis.set("war_monitor:last_message_id", id);
-//   } catch (e) {
-//     console.log(`[ERROR] Redis write: ${e.message}`);
-//   }
-// }
-
-// // ======================
-// // 📤 PUBLISH
-// // ======================
-
-// async function warPublish(msg) {
-//   try {
-//     const sourceText = msg.message || "";
-
-//     const timestamp = new Date(msg.date * 1000).toLocaleString(
-//       "uk-UA",
-//       {
-//         day: "2-digit",
-//         month: "2-digit",
-//         year: "numeric",
-//         hour: "2-digit",
-//         minute: "2-digit",
-//       }
-//     );
-
-//     const footer =
-//       `\n\n📡 <a href="https://t.me/war_monitor">Моніторинг загроз</a> • ${timestamp}`;
-
-//     const fullText = sourceText
-//       ? `${sourceText}${footer}`
-//       : `📡 <a href="https://t.me/war_monitor">Моніторинг загроз</a> • ${timestamp}`;
-
-//     // ======================
-//     // 🎥 ВІДЕО
-//     // ======================
-
-//     if (msg.video) {
-//       try {
-//         const video = await tgClient.downloadMedia(msg.video);
-
-//         await bot.telegram.sendVideo(
-//           TARGET_CHAT,
-//           {
-//             source: video,
-//           },
-//           {
-//             caption: fullText,
-//             parse_mode: "HTML",
-//           }
-//         );
-
-//         console.log(
-//           "[PUBLISH] Video posted to",
-//           TARGET_CHAT
-//         );
-
-//         return true;
-//       } catch (e) {
-//         console.log(
-//           `[ERROR] Video publish: ${e.message}`
-//         );
-//       }
-//     }
-
-//     // ======================
-//     // 🖼 ФОТО
-//     // ======================
-
-//     const images = await getImages(tgClient, [msg]);
-
-//     if (images.length === 1) {
-//       await bot.telegram.sendPhoto(
-//         TARGET_CHAT,
-//         {
-//           source: images[0],
-//         },
-//         {
-//           caption: fullText,
-//           parse_mode: "HTML",
-//         }
-//       );
-
-//       console.log(
-//         "[PUBLISH] Photo posted to",
-//         TARGET_CHAT
-//       );
-
-//       return true;
-//     }
-
-//     // ======================
-//     // 🖼🖼 КІЛЬКА ФОТО
-//     // ======================
-
-//     if (images.length > 1) {
-//       const mediaGroup = images.map((img, i) => ({
-//         type: "photo",
-//         media: {
-//           source: img,
-//         },
-//         caption: i === 0 ? fullText : undefined,
-//         parse_mode: "HTML",
-//       }));
-
-//       await bot.telegram.sendMediaGroup(
-//         TARGET_CHAT,
-//         mediaGroup
-//       );
-
-//       console.log(
-//         "[PUBLISH] MediaGroup posted to",
-//         TARGET_CHAT
-//       );
-
-//       return true;
-//     }
-
-//     // ======================
-//     // 📝 ТІЛЬКИ ТЕКСТ
-//     // ======================
-
-//     await bot.telegram.sendMessage(
-//       TARGET_CHAT,
-//       fullText,
-//       {
-//         parse_mode: "HTML",
-//       }
-//     );
-
-//     console.log(
-//       "[PUBLISH] Text posted to",
-//       TARGET_CHAT
-//     );
-
-//     return true;
-//   } catch (e) {
-//     console.log(
-//       `[ERROR] Telegram publish: ${e.message}`
-//     );
-
-//     return false;
-//   }
-// }
-
-// // ======================
-// // 🔎 WAR MONITOR
-// // ======================
-
-// async function runWarMonitor() {
-//   console.log("[WAR] ▶ Початок перевірки");
-
-//   try {
-//     console.log("[WAR] 1. Читаємо останній ID...");
-
-//     const lastId = await warGetLastId();
-
-//     console.log(
-//       "[WAR] 2. Останній ID:",
-//       lastId
-//     );
-
-//     console.log(
-//       "[WAR] 3. Отримуємо entity:",
-//       SOURCE_CHAT
-//     );
-
-//     const entity = await tgClient.getEntity(
-//       SOURCE_CHAT
-//     );
-
-//     console.log("[WAR] 4. Entity отримано");
-
-//     console.log(
-//       "[WAR] 5. Отримуємо повідомлення..."
-//     );
-
-//     const messages = await tgClient.getMessages(
-//       entity,
-//       {
-//         limit: 10,
-//       }
-//     );
-
-//     console.log(
-//       "[WAR] 6. Отримано повідомлень:",
-//       messages.length
-//     );
-
-//     for (const msg of messages.filter(Boolean)) {
-//       try {
-//         const msgId = Number(msg.id);
-
-//         console.log(
-//           `[WAR] Повідомлення #${msgId}`
-//         );
-
-//         if (msgId <= lastId) {
-//           console.log(
-//             `[WAR] #${msgId} старіше або дорівнює lastId ${lastId} — пропуск`
-//           );
-
-//           continue;
-//         }
-
-//         const textForAI = msg.message || "";
-
-//         console.log(
-//           `[WAR] #${msgId} текст:`,
-//           textForAI.substring(0, 200)
-//         );
-
-//         if (
-//           !textForAI ||
-//           textForAI.trim().length === 0
-//         ) {
-//           console.log(
-//             `[SKIP] #${msgId} немає тексту`
-//           );
-
-//           await warSaveLastId(msgId);
-
-//           continue;
-//         }
-
-//         console.log(
-//           `[AI] #${msgId} Перевіряємо через Groq...`
-//         );
-
-//         const result =
-//           await classifyWarMessage(
-//             textForAI
-//           );
-
-//         console.log(
-//           `[AI] #${msgId} Результат:`,
-//           result
-//         );
-
-//         if (result === "YES") {
-//           console.log(
-//             `[PUBLISH] #${msgId} → ${TARGET_CHAT}`
-//           );
-
-//           const published =
-//             await warPublish(msg);
-
-//           if (published) {
-//             await warSaveLastId(msgId);
-//           }
-//         } else if (result === "NO") {
-//           console.log(
-//             `[SKIP] #${msgId} Не стосується Білої Церкви`
-//           );
-
-//           await warSaveLastId(msgId);
-//         } else {
-//           console.log(
-//             `[SKIP] #${msgId} AI не відповів — ID НЕ зберігаємо`
-//           );
-//         }
-
-//         await new Promise((resolve) =>
-//           setTimeout(resolve, 1500)
-//         );
-
-//       } catch (e) {
-//         console.log(
-//           `[ERROR] Обробка повідомлення: ${e.message}`
-//         );
-//       }
-//     }
-
-//     console.log(
-//       "[WAR] ✔ Перевірка завершена"
-//     );
-
-//   } catch (e) {
-//     console.log(
-//       "[ERROR] WAR MONITOR:",
-//       e.message
-//     );
-//   }
-// }
-
-// // ======================
-// // 🌐 SERVER
-// // ======================
-
-// const app = express();
-
-// app.get("/", (req, res) => {
-//   res.send("Бот працює 🚀");
-// });
-
-// app.listen(PORT || 3000, () => {
-//   console.log(
-//     `🌐 Server started on port ${PORT || 3000}`
-//   );
-// });
-
-// // ======================
-// // ▶️ START
-// // ======================
-
-// (async () => {
-//   try {
-//     tgClient = await initClient();
-
-//     // ЄДИНИЙ режим роботи:
-//     // моніторинг обстрілів / військових загроз
-
-//     if (
-//       WAR_SOURCE_CHANNEL &&
-//       WAR_TARGET_CHANNEL
-//     ) {
-//       const interval =
-//         Number(WAR_CHECK_INTERVAL) || 60;
-
-//       console.log(
-//         "[WAR] Монітор запущено"
-//       );
-
-//       console.log(
-//         `[WAR] Джерело: ${WAR_SOURCE_CHANNEL}`
-//       );
-
-//       console.log(
-//         `[WAR] Призначення: ${WAR_TARGET_CHANNEL}`
-//       );
-
-//       console.log(
-//         `[WAR] Інтервал: ${interval}с`
-//       );
-
-//       // Перша перевірка одразу після запуску
-//       await runWarMonitor();
-
-//       // Наступні перевірки
-//       setInterval(
-//         runWarMonitor,
-//         interval * 1000
-//       );
-//     } else {
-//       console.log(
-//         "[WAR] Помилка: WAR_SOURCE_CHANNEL або WAR_TARGET_CHANNEL не задано"
-//       );
-//     }
-//   } catch (e) {
-//     console.log(
-//       `[FATAL] ${e.message}`
-//     );
-//   }
-// })();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 require("dotenv").config();
 
 const { Telegraf } = require("telegraf");
@@ -903,6 +228,7 @@ YES ТІЛЬКИ якщо повідомлення безпосередньо с
 9. ППО саме над Білою Церквою.
 10. Наслідків ударів у Білій Церкві.
 11. Подій, які прямо впливають на мешканців Білої Церкви.
+12. Загроза балістики в Білій Церкві
 
 ВАЖЛИВО ЩОДО ТРАЄКТОРІЇ:
 
@@ -1147,7 +473,6 @@ const OTHER_LOCATIONS = [
   "вишгород",
   "обухів",
   "фастів",
-  "біла церква",
 ];
 
 // ============================================================
@@ -1162,6 +487,79 @@ function normalizeText(text) {
     .trim();
 }
 
+function extractBilaTserkvaLines(text) {
+  if (!text) return "";
+
+  let cleaned = text.replace(/\r\n/g, "\n");
+
+  // Розділяємо за 🅿️ або за двома переносами
+  const blocks = cleaned.split(/(?=🅿️)|\n\s*\n/g);
+  const matchedBlocks = [];
+
+  for (let block of blocks) {
+    let trimmed = block.trim();
+    if (!trimmed) continue;
+
+    const lower = normalizeText(trimmed);
+
+    const isLocal = hasDirectBilaTserkva(lower) || hasLocalArea(lower);
+    const isRecon = 
+      lower.includes("дорозвідка") || 
+      lower.includes("відбій") || 
+      lower.includes("чисто");
+    const isBallistics = lower.includes("баліст");
+
+    if (isLocal || isRecon || isBallistics) {
+      
+      // 1. Заміна "на Київ" та видалення префіксів
+      let cleanBlock = trimmed
+        .replace(/\bна\s+Київ\b/gi, "на столицю")
+        .replace(/\bв\s+напрямку\s+Києва\b/gi, "в напрямку столиці")
+        .replace(/\bчерез\s+Київ\b/gi, "через столицю")
+        .replace(/\bКиїв\s+(та|i|та й)\s+/gi, "")
+        .replace(/\bКиїв\s*,\s*/gi, "")
+        .replace(/^(Київщина|Київ)\s*:\s*/gi, "")
+        .replace(/^Київ\s+/gi, "")
+        .replace(/^(та|і|i)\s+/gi, "")
+        .trim();
+
+      // 2. Додаємо пробіл після крапки
+      cleanBlock = cleanBlock.replace(/(\.)([0-9а-яєїіA-ZА-ЯЄЇІ])/g, "$1 $2");
+
+      // 3. ПІДБІР/ЗАМІНА ЗНАЧКА НА ПОЧАТКУ
+      let icon = "📍 "; // дефолтний значок для БЦ/району
+
+      if (isRecon) {
+        icon = lower.includes("чисто") || lower.includes("відбій") ? "🟢 " : "🔍 ";
+      } else if (isBallistics) {
+        icon = "🚨 ";
+      } else if (lower.includes("реактив") || lower.includes("сікер")) {
+        icon = "❗️ ";
+      } else if (lower.includes("бпла") || lower.includes("дрон")) {
+        icon = "🛵 ";
+      }
+
+      // Якщо на початку вже є 🅿️, міняємо його на підібраний гарний значок
+      if (cleanBlock.startsWith("🅿️")) {
+        cleanBlock = cleanBlock.replace(/^🅿️\s*/, icon);
+      } else {
+        // Якщо значка не було — додаємо
+        cleanBlock = icon + cleanBlock;
+      }
+
+      // 4. Робимо першу літеру після значка великою
+      const iconLength = icon.length;
+      const textPart = cleanBlock.slice(iconLength).trim();
+      if (textPart.length > 0) {
+        cleanBlock = icon + textPart.charAt(0).toUpperCase() + textPart.slice(1);
+      }
+
+      matchedBlocks.push(cleanBlock);
+    }
+  }
+
+  return matchedBlocks.join("\n\n");
+}
 // ============================================================
 // Чи є пряма згадка Білої Церкви
 // ============================================================
@@ -1251,6 +649,9 @@ function hasDirectThreatToBilaTserkva(text) {
     "рухаються",
     "напрямку",
     "курс",
+    "дорозвідка", 
+    "дорозвідки", 
+    "відбій", 
   ];
 
   const hasThreatWord =
@@ -1271,8 +672,7 @@ function hasDirectThreatToBilaTserkva(text) {
 // ============================================================
 
 function localPrecheck(text) {
-  const normalized =
-    normalizeText(text);
+  const normalized = normalizeText(text);
 
   if (!normalized) {
     return {
@@ -1282,78 +682,88 @@ function localPrecheck(text) {
   }
 
   // ----------------------------------------------------------
-  // 1. Прямий зв'язок із Білою Церквою + загроза
+  // 0. Спеціальні системні статуси (дорозвідка / відбій)
   // ----------------------------------------------------------
+  const isReconOrClear = 
+    normalized.includes("дорозвідка") || 
+    normalized.includes("дорозвідки") || 
+    normalized.includes("чисто") || 
+    normalized.includes("відбій");
 
-  if (
-    hasDirectThreatToBilaTserkva(
-      normalized
-    )
-  ) {
+  if (isReconOrClear) {
     return {
       decision: "YES",
-      reason:
-        "direct threat to Bila Tserkva",
+      reason: "system status (recon/clear)",
+    };
+  }
+
+  // ----------------------------------------------------------
+  // 0.1. Загрози балістики для нашого регіону
+  // ----------------------------------------------------------
+  const isBallistics = normalized.includes("баліст");
+
+  if (isBallistics) {
+    // Перевіряємо, чи балістика має відношення до нашого регіону/вектору
+    const isRelevantRegion = 
+      hasDirectBilaTserkva(normalized) ||
+      hasLocalArea(normalized) ||
+      normalized.includes("київ") ||
+      normalized.includes("центр") ||
+      normalized.includes("північ");
+
+    if (isRelevantRegion) {
+      return {
+        decision: "YES",
+        reason: "ballistics threat to region",
+      };
+    }
+  }
+
+  // ----------------------------------------------------------
+  // 1. Прямий зв'язок із Білою Церквою + загроза
+  // ----------------------------------------------------------
+  if (hasDirectThreatToBilaTserkva(normalized)) {
+    return {
+      decision: "YES",
+      reason: "direct threat to Bila Tserkva",
     };
   }
 
   // ----------------------------------------------------------
   // 2. Явна локальна локація
   // ----------------------------------------------------------
-
-  if (
-    hasDirectBilaTserkva(
-      normalized
-    )
-  ) {
-    // Якщо прямо згадується Біла Церква,
-    // віддаємо AI для остаточного рішення.
+  if (hasDirectBilaTserkva(normalized)) {
     return {
       decision: null,
-      reason:
-        "mentions Bila Tserkva",
+      reason: "mentions Bila Tserkva",
     };
   }
 
-  if (
-    hasLocalArea(normalized)
-  ) {
+  if (hasLocalArea(normalized)) {
     return {
       decision: null,
-      reason:
-        "mentions local area",
+      reason: "mentions local area",
     };
   }
 
   // ----------------------------------------------------------
   // 3. Очевидні false positive
   // ----------------------------------------------------------
-
-  for (
-    const pattern of HARD_NO_PATTERNS
-  ) {
-    if (
-      pattern.test(normalized)
-    ) {
+  for (const pattern of HARD_NO_PATTERNS) {
+    if (pattern.test(normalized)) {
       return {
         decision: "NO",
-        reason:
-          "hard irrelevant location",
+        reason: "hard irrelevant location",
       };
     }
   }
 
   // ----------------------------------------------------------
-  // 4. Якщо є тільки загальна Київщина
+  // 4. Якщо є тільки загальна Київщина (для звичайних БпЛА/ракет)
   // ----------------------------------------------------------
-
   const hasKyivRegion =
-    normalized.includes(
-      "київська область"
-    ) ||
-    normalized.includes(
-      "київщин"
-    );
+    normalized.includes("київська область") ||
+    normalized.includes("київщин");
 
   const threatWords = [
     "бпла",
@@ -1368,50 +778,32 @@ function localPrecheck(text) {
     "вибух",
   ];
 
-  const hasThreat =
-    threatWords.some(
-      (word) =>
-        normalized.includes(word)
-    );
+  const hasThreat = threatWords.some((word) => normalized.includes(word));
 
-  if (
-    hasKyivRegion &&
-    hasThreat
-  ) {
-    // Загальна Київщина без Білої Церкви
-    // НЕ проходить як YES.
+  if (hasKyivRegion && hasThreat) {
     return {
       decision: "NO",
-      reason:
-        "general Kyiv region threat",
+      reason: "general Kyiv region threat",
     };
   }
 
   // ----------------------------------------------------------
   // 5. Інша локація без Білої Церкви
   // ----------------------------------------------------------
+  const hasOtherLocation = OTHER_LOCATIONS.some((term) =>
+    normalized.includes(term)
+  );
 
-  const hasOtherLocation =
-    OTHER_LOCATIONS.some(
-      (term) =>
-        normalized.includes(term)
-    );
-
-  if (
-    hasOtherLocation &&
-    hasThreat
-  ) {
+  if (hasOtherLocation && hasThreat) {
     return {
       decision: "NO",
-      reason:
-        "other location threat",
+      reason: "other location threat",
     };
   }
 
   // ----------------------------------------------------------
   // Все інше передаємо AI
   // ----------------------------------------------------------
-
   return {
     decision: null,
     reason: "send to AI",
@@ -2398,179 +1790,36 @@ async function getImages(
 
 async function warPublish(msg) {
   try {
-    // ========================================================
-    // 📝 ОРИГІНАЛЬНИЙ ТЕКСТ
-    // ========================================================
-
     let sourceText = msg.message || "";
 
-    // ========================================================
-    // 🧹 ВИДАЛЯЄМО СТАРИЙ ФУТЕР
-    //
-    // 📡 Моніторинг загроз (https://t.me/war_monitor) • дата
-    // ========================================================
-
+    // 1. Очищення від футера
     sourceText = sourceText
-      .replace(
-        /\s*📡\s*Моніторинг загроз\s*\(\s*https?:\/\/t\.me\/war_monitor\s*\)\s*•[\s\S]*$/i,
-        ""
-      )
+      .replace(/\s*📡\s*Моніторинг загроз\s*\(\s*https?:\/\/t\.me\/war_monitor\s*\)\s*•[\s\S]*$/i, "")
       .trim();
 
-    // ========================================================
-    // 🧹 ПРИБИРАЄМО ЗАЙВІ ПУСТІ РЯДКИ
-    // ========================================================
+    // 2. Витягуємо цілісні блоки, що стосуються Білої Церкви
+    const extractedText = extractBilaTserkvaLines(sourceText);
 
-    sourceText = sourceText
-      .replace(/\r\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+    // Страховка: якщо з якоїсь причини екстракція повернула порожній рядок
+    const finalText = extractedText || sourceText;
 
-    // ========================================================
-    // 🛡 HTML ESCAPE
-    // ========================================================
-
-    const safeText =
-      escapeHtml(sourceText);
-
-    // ========================================================
-    // 🎥 VIDEO
-    // ========================================================
-
-    if (msg.video) {
-      try {
-        const video =
-          await tgClient.downloadMedia(
-            msg.video
-          );
-
-        if (video) {
-          await bot.telegram.sendVideo(
-            TARGET_CHAT,
-            {
-              source: video,
-            },
-            {
-              caption: safeText || undefined,
-              parse_mode: "HTML",
-            }
-          );
-
-          console.log(
-            "[PUBLISH] Video posted to",
-            TARGET_CHAT
-          );
-
-          return true;
-        }
-      } catch (e) {
-        console.log(
-          `[ERROR] Video publish: ${e.message}`
-        );
-      }
-    }
-
-    // ========================================================
-    // 🖼 PHOTO
-    // ========================================================
-
-    const images =
-      await getImages(
-        tgClient,
-        [msg]
-      );
-
-    if (images.length === 1) {
-      await bot.telegram.sendPhoto(
-        TARGET_CHAT,
-        {
-          source: images[0],
-        },
-        {
-          caption: safeText || undefined,
-          parse_mode: "HTML",
-        }
-      );
-
-      console.log(
-        "[PUBLISH] Photo posted to",
-        TARGET_CHAT
-      );
-
-      return true;
-    }
-
-    // ========================================================
-    // 🖼🖼 MEDIA GROUP
-    // ========================================================
-
-    if (images.length > 1) {
-      const mediaGroup =
-        images.map(
-          (img, i) => ({
-            type: "photo",
-
-            media: {
-              source: img,
-            },
-
-            caption:
-              i === 0 && safeText
-                ? safeText
-                : undefined,
-
-            parse_mode:
-              i === 0 && safeText
-                ? "HTML"
-                : undefined,
-          })
-        );
-
-      await bot.telegram.sendMediaGroup(
-        TARGET_CHAT,
-        mediaGroup
-      );
-
-      console.log(
-        "[PUBLISH] MediaGroup posted to",
-        TARGET_CHAT
-      );
-
-      return true;
-    }
-
-    // ========================================================
-    // 📝 TEXT
-    // ========================================================
+    const safeText = escapeHtml(finalText);
 
     if (!safeText) {
-      console.log(
-        "[PUBLISH] Порожній текст — пропуск"
-      );
-
+      console.log("[PUBLISH] Порожній текст після очищення — пропуск");
       return false;
     }
 
-    await bot.telegram.sendMessage(
-      TARGET_CHAT,
-      safeText,
-      {
-        parse_mode: "HTML",
-      }
-    );
+    // 3. Відправка в Telegram
+    await bot.telegram.sendMessage(TARGET_CHAT, safeText, {
+      parse_mode: "HTML",
+    });
 
-    console.log(
-      "[PUBLISH] Text posted to",
-      TARGET_CHAT
-    );
-
+    console.log("[PUBLISH] Text posted to", TARGET_CHAT);
     return true;
 
   } catch (e) {
-    console.log(
-      `[ERROR] Telegram publish: ${e.message}`
-    );
-
+    console.log(`[ERROR] Telegram publish: ${e.message}`);
     return false;
   }
 }
