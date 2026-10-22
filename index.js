@@ -5,6 +5,7 @@ const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const input = require("input");
 const Groq = require("groq-sdk");
+const { GoogleGenAI } = require("@google/genai");
 const express = require("express");
 const { Redis } = require("@upstash/redis");
 
@@ -16,7 +17,8 @@ const {
   BOT_TOKEN,
 
   GROQ_API_KEY,
-  XAI_API_KEY,
+  GEMINI_API_KEY,
+  GEMINI_MODEL,
   OPENROUTER_API_KEY,
 
   API_ID,
@@ -37,6 +39,15 @@ const {
 // ============================================================
 
 const AI_TIMEOUT = 15000;
+const FREE_GEMINI_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+];
+const ACTIVE_GEMINI_MODEL =
+  FREE_GEMINI_MODELS.includes(GEMINI_MODEL)
+    ? GEMINI_MODEL
+    : FREE_GEMINI_MODELS[0];
 
 // Скільки разів дозволяємо повторити повідомлення,
 // якщо ВСІ AI недоступні.
@@ -50,12 +61,16 @@ const WAR_MESSAGES_LIMIT = 20;
 // OPENROUTER
 // ============================================================
 
-// Не використовуємо десятки випадкових моделей.
-// OpenRouter — останній резерв.
+// OpenRouter сам обирає модель із поточного безкоштовного пулу.
 const OPENROUTER_MODELS = [
   "openrouter/free",
-  "openai/gpt-oss-20b:free",
-  "google/gemma-4-26b-a4b-it:free",
+];
+
+// Використовуємо лише моделі, для яких Groq показує ліміти Free Plan.
+const FREE_GROQ_MODELS = [
+  "qwen/qwen3.8-27b",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
 ];
 
 // ============================================================
@@ -79,6 +94,12 @@ const groq = GROQ_API_KEY
     })
   : null;
 
+const gemini = GEMINI_API_KEY
+  ? new GoogleGenAI({
+      apiKey: GEMINI_API_KEY,
+    })
+  : null;
+
 // Поточна модель Groq
 let GROQ_MODEL = null;
 
@@ -92,10 +113,7 @@ let groqModelIndex = 0;
 const groqBadModels = new Set();
 
 // ============================================================
-// XAI
-// ============================================================
-
-let xaiDisabled = false;
+let geminiDisabled = false;
 
 // ============================================================
 // OPENROUTER
@@ -121,7 +139,7 @@ const redis =
 // ============================================================
 
 const SOURCE_CHAT =
-  WAR_SOURCE_CHANNEL || "war_monitor";
+  WAR_SOURCE_CHANNEL || "kpszsu";
 
 let TARGET_CHAT =
   WAR_TARGET_CHANNEL || "xybc_live";
@@ -186,14 +204,20 @@ console.log(
 );
 
 console.log(
-  "XAI KEY:",
-  XAI_API_KEY ? "Є" : "НЕМАЄ"
+  "GEMINI KEY:",
+  GEMINI_API_KEY ? "Є" : "НЕМАЄ"
 );
 
 console.log(
   "OPENROUTER KEY:",
   OPENROUTER_API_KEY ? "Є" : "НЕМАЄ"
 );
+
+if (GEMINI_MODEL && !FREE_GEMINI_MODELS.includes(GEMINI_MODEL)) {
+  console.log(
+    `[GEMINI] Модель ${GEMINI_MODEL} не в безкоштовному списку; використовую ${ACTIVE_GEMINI_MODEL}`
+  );
+}
 
 console.log(
   "REDIS:",
@@ -207,113 +231,23 @@ console.log("======================================");
 // ============================================================
 
 const WAR_SYSTEM_PROMPT = `
-Ти дуже суворий модератор локального Telegram-каналу Білої Церкви.
+Ти модеруєш попереджувальний канал для Білоцерківського району.
+Визнач, чи повідомлення містить важливу інформацію про повітряну ціль або загрозу для району.
 
-Твоє завдання — визначити ТІЛЬКИ одне:
+Відповідай YES, якщо є хоча б одна умова:
+1. Загроза, ціль, рух БпЛА/ракети/авіації, вибухи або робота ППО в Білоцерківському районі, Білій Церкві чи будь-якій громаді/населеному пункті району.
+2. Ціль прямо рухається в напрямку району, через район або до Білої Церкви.
+3. Активна повітряна ціль зафіксована в суміжному напрямку: Фастівський чи Обухівський райони Київщини; Уманський чи Звенигородський райони Черкащини; Вінницький район Вінниччини; Бердичівський чи Житомирський райони Житомирщини. Враховуй також назви міст і громад у цих районах. Така ціль може становити потенційну загрозу для Білоцерківського району, навіть якщо його назва ще не згадана.
+4. Загроза йде із суміжної області/району в напрямку Київщини або через географічно можливий маршрут до Білоцерківського району.
+5. Повідомлення про дорозвідку, відбій або наслідки стосується саме Білоцерківського району чи зазначеної суміжної цілі.
 
-YES
-або
-NO
+Для суміжних районів оцінюй напрямок і контекст. Не відхиляй повідомлення лише через те, що в ньому згадано Фастів, Васильків, Обухів, Умань, Звенигородку, Вінницю, Бердичів або Житомир. Також не вважай кожну ціль у цих районах автоматично загрозою: якщо повідомлення прямо вказує рух в інший бік або на віддалене місто без можливого маршруту до Білоцерківщини — відповідай NO.
 
-YES ТІЛЬКИ якщо повідомлення безпосередньо стосується:
+Загальні повідомлення на кшталт «БпЛА в Київській області», «ППО на Київщині», тривога в іншій області, загальноукраїнська балістична загроза без локального напрямку, а також цілі на Київ, Славутич, Бровари, Бориспіль, Ірпінь, Бучу чи Вишгород самі по собі — NO.
+Якщо згадано лише сусідню локацію без повітряної цілі, військової загрози чи пов'язаного статусу — NO.
 
-1. Білої Церкви.
-2. Білоцерківської громади.
-3. Білоцерківського району.
-4. Населених пунктів Білоцерківської громади/району.
-5. Безпосередньої загрози для Білої Церкви.
-6. Ракети/БпЛА/авіації, які прямо рухаються НА Білу Церкву.
-7. Повітряної тривоги саме в Білій Церкві.
-8. Вибухів саме в Білій Церкві.
-9. ППО саме над Білою Церквою.
-10. Наслідків ударів у Білій Церкві.
-11. Подій, які прямо впливають на мешканців Білої Церкви.
-12. Загроза балістики в Білій Церкві
-
-ВАЖЛИВО ЩОДО ТРАЄКТОРІЇ:
-
-Якщо написано:
-
-"БпЛА рухається на Білу Церкву"
-→ YES
-
-"ракета у напрямку Білої Церкви"
-→ YES
-
-"БпЛА через Фастів у напрямку Білої Церкви"
-→ YES
-
-"БпЛА в напрямку Білоцерківського району"
-→ YES
-
-Але:
-
-"БпЛА на Славутич"
-→ NO
-
-"БпЛА від Славутича у напрямку Київщини"
-→ NO
-
-"БпЛА на Київ"
-→ NO
-
-"ракети на Київ"
-→ NO
-
-"ППО Київська область"
-→ NO
-
-"тривога по Київській області"
-→ NO
-
-"БпЛА в Київській області"
-→ NO
-
-"вибухи в Києві"
-→ NO
-
-"ППО працює в Київській області"
-→ NO
-
-Сам факт згадки:
-
-"Київщина"
-"Київська область"
-"БпЛА"
-"ракети"
-"ППО"
-"тривога"
-
-НЕ означає YES.
-
-Потрібен конкретний зв'язок із Білою Церквою.
-
-Інші міста Київської області НЕ вважай Білою Церквою.
-
-Наприклад:
-
-Славутич → NO
-Київ → NO
-Бровари → NO
-Бориспіль → NO
-Ірпінь → NO
-Буча → NO
-Вишгород → NO
-Обухів → NO
-Фастів → NO
-
-Якщо немає чіткого зв'язку з Білою Церквою —
-відповідай NO.
-
-НЕ пояснюй.
-
-Відповідь повинна бути РІВНО:
-
-YES
-
-або
-
-NO
+Не вигадуй траєкторію, напрямок чи підтвердження тривоги. Не пояснюй відповідь.
+Відповідай РІВНО YES або NO.
 `;
 
 // ============================================================
@@ -440,7 +374,34 @@ const LOCAL_POSITIVE_TERMS = [
 // Відомі населені пункти/локації,
 // які для цього каналу мають значення.
 const LOCAL_AREA_TERMS = [
+  "сквира",
+  "сквир",
+  "тараща",
+  "таращан",
+  "тетієв",
+  "тетіїв",
   "узин",
+  "володар",
+  "гребінк",
+  "рокитн",
+  "ставищ",
+  "ковалів",
+  "ковалівк",
+  "мала вільшанк",
+  "маловільшанк",
+  "медвин",
+  "медвинськ",
+  "пилипч",
+  "сидор",
+  "скребиш",
+  "храпач",
+  "фурсів",
+  "вільна тарасів",
+  "володимирівк",
+  "гайок",
+  "глибоч",
+  "городищ",
+  "мазепинц",
   "терезине",
   "фурси",
   "шкарівка",
@@ -451,10 +412,88 @@ const LOCAL_AREA_TERMS = [
   "сухоліси",
   "томилівка",
   "генеральське",
-  "васильків",
   "саварка",
-  "володарка",
-  "ставище",
+];
+
+// Суміжні райони та найближчі населені пункти.
+// Їхні повідомлення проходять до AI для оцінки потенційного напрямку загрози.
+const NEARBY_RISK_TERMS = [
+  "фастівськ",
+  "фастів",
+  "боярк",
+  "глевах",
+  "калинів",
+  "томашів",
+  "чабан",
+  "обухівськ",
+  "обухів",
+  "васильків",
+  "кагарлик",
+  "ржищів",
+  "українк",
+  "богуслав",
+  "миронів",
+  "уманськ",
+  "уман",
+  "жашків",
+  "монастирищ",
+  "звенигород",
+  "лисянк",
+  "шпол",
+  "черкаськ",
+  "черкащин",
+  "вінницьк",
+  "вінниччин",
+  "вінниц",
+  "погребищ",
+  "оратів",
+  "бердичівськ",
+  "бердичів",
+  "житомирськ",
+  "житомирщин",
+  "житомир",
+  "попільн",
+  "ружин",
+];
+
+const THREAT_TERMS = [
+  "бпла",
+  "бпл",
+  "дрон",
+  "шахед",
+  "ракета",
+  "ракет",
+  "баліст",
+  "авіа",
+  "літак",
+  "винищ",
+  "ппо",
+  "вибух",
+  "загроз",
+  "ціл",
+  "тривог",
+  "дорозвід",
+  "відбій",
+  "чисто",
+];
+
+const AIR_TARGET_TERMS = [
+  "бпла",
+  "бпл",
+  "дрон",
+  "шахед",
+  "ракета",
+  "ракет",
+  "баліст",
+  "авіа",
+  "літак",
+  "винищ",
+  "ппо",
+  "вибух",
+  "тривог",
+  "ціл",
+  "об'єкт",
+  "обʼєкт",
 ];
 
 // Очевидно інші напрямки.
@@ -487,75 +526,65 @@ function normalizeText(text) {
     .trim();
 }
 
+function hasNearbyRiskArea(text) {
+  const normalized = normalizeText(text);
+
+  return NEARBY_RISK_TERMS.some((term) => normalized.includes(term));
+}
+
+function hasThreatSignal(text) {
+  const normalized = normalizeText(text);
+
+  return THREAT_TERMS.some((term) => normalized.includes(term));
+}
+
+function hasAirTargetSignal(text) {
+  const normalized = normalizeText(text);
+
+  return AIR_TARGET_TERMS.some((term) => normalized.includes(term));
+}
+
 function extractBilaTserkvaLines(text) {
   if (!text) return "";
 
-  let cleaned = text.replace(/\r\n/g, "\n");
-
-  // Розділяємо за 🅿️ або за двома переносами
-  const blocks = cleaned.split(/(?=🅿️)|\n\s*\n/g);
+  const cleaned = text.replace(/\r\n/g, "\n");
+  // Повідомлення Повітряних сил часто містить кілька цілей окремими рядками.
+  const blocks = cleaned.split(/\n+/g);
   const matchedBlocks = [];
 
-  for (let block of blocks) {
-    let trimmed = block.trim();
+  for (const block of blocks) {
+    const trimmed = block.trim();
     if (!trimmed) continue;
 
     const lower = normalizeText(trimmed);
-
     const isLocal = hasDirectBilaTserkva(lower) || hasLocalArea(lower);
-    const isRecon = 
-      lower.includes("дорозвідка") || 
-      lower.includes("відбій") || 
-      lower.includes("чисто");
-    const isBallistics = lower.includes("баліст");
+    const isNearbyThreat = hasNearbyRiskArea(lower) && hasThreatSignal(lower);
+    const hasRegionalRoute =
+      hasRegionalRouteContext(lower) && hasThreatSignal(lower);
 
-    if (isLocal || isRecon || isBallistics) {
-      
-      // 1. Заміна "на Київ" та видалення префіксів
-      let cleanBlock = trimmed
-        .replace(/\bна\s+Київ\b/gi, "на столицю")
-        .replace(/\bв\s+напрямку\s+Києва\b/gi, "в напрямку столиці")
-        .replace(/\bчерез\s+Київ\b/gi, "через столицю")
-        .replace(/\bКиїв\s+(та|i|та й)\s+/gi, "")
-        .replace(/\bКиїв\s*,\s*/gi, "")
-        .replace(/^(Київщина|Київ)\s*:\s*/gi, "")
-        .replace(/^Київ\s+/gi, "")
-        .replace(/^(та|і|i)\s+/gi, "")
-        .trim();
+    if (!isLocal && !isNearbyThreat && !hasRegionalRoute) continue;
 
-      // 2. Додаємо пробіл після крапки
-      cleanBlock = cleanBlock.replace(/(\.)([0-9а-яєїіA-ZА-ЯЄЇІ])/g, "$1 $2");
+    // Залишаємо вихідний текст без переписування назв і напрямків.
+    const cleanBlock = trimmed.replace(/^🅿️\s*/, "");
+    const isRecon = /дорозвід|відбій|чисто/i.test(lower);
+    const isNearbyOnly =
+      !isLocal &&
+      (hasNearbyRiskArea(lower) || hasRegionalRouteContext(lower));
 
-      // 3. ПІДБІР/ЗАМІНА ЗНАЧКА НА ПОЧАТКУ
-      let icon = "📍 "; // дефолтний значок для БЦ/району
-
-      if (isRecon) {
-        icon = lower.includes("чисто") || lower.includes("відбій") ? "🟢 " : "🔍 ";
-      } else if (isBallistics) {
-        icon = "🚨 ";
-      } else if (lower.includes("реактив") || lower.includes("сікер")) {
-        icon = "❗️ ";
-      } else if (lower.includes("бпла") || lower.includes("дрон")) {
-        icon = "🛵 ";
-      }
-
-      // Якщо на початку вже є 🅿️, міняємо його на підібраний гарний значок
-      if (cleanBlock.startsWith("🅿️")) {
-        cleanBlock = cleanBlock.replace(/^🅿️\s*/, icon);
-      } else {
-        // Якщо значка не було — додаємо
-        cleanBlock = icon + cleanBlock;
-      }
-
-      // 4. Робимо першу літеру після значка великою
-      const iconLength = icon.length;
-      const textPart = cleanBlock.slice(iconLength).trim();
-      if (textPart.length > 0) {
-        cleanBlock = icon + textPart.charAt(0).toUpperCase() + textPart.slice(1);
-      }
-
-      matchedBlocks.push(cleanBlock);
+    let prefix = "📍 ";
+    if (isNearbyOnly) {
+      prefix = "⚠️ Суміжний напрямок: ";
+    } else if (isRecon) {
+      prefix = /відбій|чисто/i.test(lower) ? "🟢 " : "🔍 ";
+    } else if (/баліст/i.test(lower)) {
+      prefix = "🚨 ";
+    } else if (/реактив|сікер/i.test(lower)) {
+      prefix = "❗️ ";
+    } else if (/бпла|бпл|дрон/i.test(lower)) {
+      prefix = "🛵 ";
     }
+
+    matchedBlocks.push(`${prefix}${cleanBlock}`);
   }
 
   return matchedBlocks.join("\n\n");
@@ -588,6 +617,25 @@ function hasLocalArea(text) {
   );
 }
 
+function hasRegionalRouteContext(text) {
+  const normalized = normalizeText(text);
+  const hasMovement = /(курс|напрям|руха|летить|пряму|через|у бік|в бік)/i.test(
+    normalized
+  );
+  const hasKyivRegion =
+    normalized.includes("київська область") ||
+    normalized.includes("київщин") ||
+    normalized.includes("київщину");
+
+  const hasLikelyApproachOrigin =
+    hasNearbyRiskArea(normalized) ||
+    /(?:з|зі|із)\s+(?:південн|західн|південно-західн|південно-східн)/i.test(
+      normalized
+    );
+
+  return hasMovement && hasKyivRegion && hasLikelyApproachOrigin;
+}
+
 // ============================================================
 // Жорсткі нерелевантні фрази
 // ============================================================
@@ -607,8 +655,6 @@ const HARD_NO_PATTERNS = [
   /ракети.*на\s+київ/i,
   /ракета.*на\s+київ/i,
 
-  /ппо.*київська\s+область/i,
-  /тривога.*київська\s+область/i,
 ];
 
 // ============================================================
@@ -627,44 +673,7 @@ function hasDirectThreatToBilaTserkva(text) {
     return false;
   }
 
-  const threatWords = [
-    "бпла",
-    "бпл",
-    "дрон",
-    "дрони",
-    "ракета",
-    "ракети",
-    "шахед",
-    "авіа",
-    "реактив",
-    "літак",
-    "винищувач",
-    "ппо",
-    "вибух",
-    "вибухи",
-    "тривога",
-    "загроза",
-    "летить",
-    "рухається",
-    "рухаються",
-    "напрямку",
-    "курс",
-    "дорозвідка", 
-    "дорозвідки", 
-    "відбій", 
-  ];
-
-  const hasThreatWord =
-    threatWords.some(
-      (word) =>
-        normalized.includes(word)
-    );
-
-  if (hasThreatWord) {
-    return true;
-  }
-
-  return false;
+  return hasThreatSignal(normalized);
 }
 
 // ============================================================
@@ -682,67 +691,67 @@ function localPrecheck(text) {
   }
 
   // ----------------------------------------------------------
-  // 0. Спеціальні системні статуси (дорозвідка / відбій)
-  // ----------------------------------------------------------
-  const isReconOrClear = 
-    normalized.includes("дорозвідка") || 
-    normalized.includes("дорозвідки") || 
-    normalized.includes("чисто") || 
-    normalized.includes("відбій");
+  const isLocal =
+    hasDirectBilaTserkva(normalized) || hasLocalArea(normalized);
+  const isNearby = hasNearbyRiskArea(normalized);
+  const hasThreat = hasThreatSignal(normalized);
+  const isReconOrClear = /дорозвід|відбій|чисто/i.test(normalized);
 
+  // Відбій/дорозвідку публікуємо лише для району або перевіряємо AI
+  // для суміжної локації. Загальноукраїнські статуси не проходять.
   if (isReconOrClear) {
+    if (isLocal) {
+      return {
+        decision: "YES",
+        reason: "local recon/clear status",
+      };
+    }
+
+    if (isNearby && hasAirTargetSignal(normalized)) {
+      return {
+        decision: null,
+        reason: "nearby-area status candidate",
+      };
+    }
+
     return {
-      decision: "YES",
-      reason: "system status (recon/clear)",
+      decision: "NO",
+      reason: "status without local area",
     };
   }
 
-  // ----------------------------------------------------------
-  // 0.1. Загрози балістики для нашого регіону
-  // ----------------------------------------------------------
-  const isBallistics = normalized.includes("баліст");
-
-  if (isBallistics) {
-    // Перевіряємо, чи балістика має відношення до нашого регіону/вектору
-    const isRelevantRegion = 
-      hasDirectBilaTserkva(normalized) ||
-      hasLocalArea(normalized) ||
-      normalized.includes("київ") ||
-      normalized.includes("центр") ||
-      normalized.includes("північ");
-
-    if (isRelevantRegion) {
-      return {
-        decision: "YES",
-        reason: "ballistics threat to region",
-      };
-    }
-  }
-
-  // ----------------------------------------------------------
-  // 1. Прямий зв'язок із Білою Церквою + загроза
-  // ----------------------------------------------------------
+  // Пряма ціль у районі — надсилаємо без AI.
   if (hasDirectThreatToBilaTserkva(normalized)) {
     return {
       decision: "YES",
-      reason: "direct threat to Bila Tserkva",
+      reason: "direct threat to Bila Tserkva district",
     };
   }
 
   // ----------------------------------------------------------
   // 2. Явна локальна локація
   // ----------------------------------------------------------
-  if (hasDirectBilaTserkva(normalized)) {
+  if (isLocal) {
     return {
       decision: null,
-      reason: "mentions Bila Tserkva",
+      reason: "mentions Bila Tserkva district location",
     };
   }
 
-  if (hasLocalArea(normalized)) {
+  // Загрози у суміжних районах/громадах не відкидаємо автоматично.
+  // AI вирішує, чи може напрямок становити ризик для Білоцерківщини.
+  if (isNearby && hasThreat) {
     return {
       decision: null,
-      reason: "mentions local area",
+      reason: "nearby-area threat candidate",
+    };
+  }
+
+  // Транскордонний вектор із суміжного регіону на Київщину оцінює AI.
+  if (hasThreat && hasRegionalRouteContext(normalized)) {
+    return {
+      decision: null,
+      reason: "regional approach route candidate",
     };
   }
 
@@ -765,25 +774,10 @@ function localPrecheck(text) {
     normalized.includes("київська область") ||
     normalized.includes("київщин");
 
-  const threatWords = [
-    "бпла",
-    "бпл",
-    "дрон",
-    "дрони",
-    "ракета",
-    "ракети",
-    "шахед",
-    "ппо",
-    "тривога",
-    "вибух",
-  ];
-
-  const hasThreat = threatWords.some((word) => normalized.includes(word));
-
   if (hasKyivRegion && hasThreat) {
     return {
-      decision: "NO",
-      reason: "general Kyiv region threat",
+      decision: null,
+      reason: "Kyiv region threat candidate",
     };
   }
 
@@ -846,66 +840,10 @@ async function initGroqModels() {
       ids.join(", ")
     );
 
-    // --------------------------------------------------------
-    // Моделі, які НЕ використовуємо
-    // --------------------------------------------------------
-
-    const excluded = [
-      "whisper",
-      "orpheus",
-      "prompt-guard",
-      "safeguard",
-    ];
-
-    // --------------------------------------------------------
-    // Пріоритет
-    // --------------------------------------------------------
-
-    const preferred = [
-      "openai/gpt-oss-20b",
-      "openai/gpt-oss-120b",
-      "qwen/qwen3.6-27b",
-      "allam-2-7b",
-      "llama-3.3-70b-versatile",
-      "llama-3.1-8b-instant",
-    ];
-
-    const selected = [];
-
-    // Спочатку preferred
-    for (
-      const model of preferred
-    ) {
-      if (
-        ids.includes(model) &&
-        !selected.includes(model)
-      ) {
-        selected.push(model);
-      }
-    }
-
-    // Потім інші придатні
-    for (
-      const model of ids
-    ) {
-      const lower =
-        model.toLowerCase();
-
-      if (
-        excluded.some(
-          (word) =>
-            lower.includes(word)
-        )
-      ) {
-        continue;
-      }
-
-      if (
-        !selected.includes(model)
-      ) {
-        selected.push(model);
-      }
-    }
+    // Додаємо лише відомі моделі Free Plan, у визначеному порядку.
+    const selected = FREE_GROQ_MODELS.filter(
+      (model) => ids.includes(model)
+    );
 
     GROQ_MODELS =
       selected;
@@ -1200,94 +1138,36 @@ async function classifyWithGroqFallback(
 }
 
 // ============================================================
-// 🤖 XAI / GROK
+// 🤖 GEMINI
 // ============================================================
 
-async function classifyWithXAI(
-  text
-) {
-  if (
-    !XAI_API_KEY ||
-    xaiDisabled
-  ) {
+async function classifyWithGemini(text) {
+  if (!gemini || geminiDisabled) {
     return null;
   }
 
   try {
     console.log(
-      "[AI] xAI/Grok — запит..."
+      `[AI] Gemini (${ACTIVE_GEMINI_MODEL}) — запит...`
     );
 
-    const response =
-      await withTimeout(
-        fetch(
-          "https://api.x.ai/v1/chat/completions",
-          {
-            method: "POST",
+    const response = await withTimeout(
+      gemini.models.generateContent({
+        model: ACTIVE_GEMINI_MODEL,
+        contents: `Повідомлення для перевірки:\n\n${text}`,
+        config: {
+          systemInstruction: WAR_SYSTEM_PROMPT,
+          maxOutputTokens: 32,
+        },
+      }),
+      AI_TIMEOUT
+    );
 
-            headers: {
-              "Content-Type":
-                "application/json",
-
-              Authorization:
-                `Bearer ${XAI_API_KEY}`,
-            },
-
-            body: JSON.stringify({
-              model:
-                "grok-3-mini",
-
-              messages: [
-                {
-                  role: "system",
-                  content:
-                    WAR_SYSTEM_PROMPT,
-                },
-
-                {
-                  role: "user",
-                  content:
-                    `Повідомлення для перевірки:\n\n${text}`,
-                },
-              ],
-
-              temperature: 0,
-
-              max_tokens: 32,
-            }),
-          }
-        ),
-        AI_TIMEOUT
-      );
-
-    if (!response.ok) {
-      const errorText =
-        await response.text();
-
-      if (
-        response.status === 401
-      ) {
-        xaiDisabled = true;
-      }
-
-      throw new Error(
-        `HTTP ${response.status}: ${errorText}`
-      );
-    }
-
-    const data =
-      await response.json();
-
-    const answer =
-      data?.choices?.[0]
-        ?.message?.content
-        ?.trim() || "";
-
-    const parsed =
-      parseYesNo(answer);
+    const answer = response?.text?.trim() || "";
+    const parsed = parseYesNo(answer);
 
     console.log(
-      "[AI] xAI відповідь:",
+      "[AI] Gemini відповідь:",
       answer || "(порожньо)"
     );
 
@@ -1296,13 +1176,20 @@ async function classifyWithXAI(
     }
 
     throw new Error(
-      `Некоректна відповідь: ${
-        answer || "(порожньо)"
-      }`
+      `Некоректна відповідь: ${answer || "(порожньо)"}`
     );
   } catch (e) {
+    const status = Number(e?.status || e?.code);
+
+    if ([401, 403, 404].includes(status)) {
+      geminiDisabled = true;
+      console.log(
+        "[GEMINI] Вимкнено до перезапуску через помилку ключа або моделі"
+      );
+    }
+
     console.log(
-      `[ERROR] xAI/Grok: ${e.message}`
+      `[ERROR] Gemini (${ACTIVE_GEMINI_MODEL}): ${e.message}`
     );
 
     return null;
@@ -1567,31 +1454,22 @@ async function classifyWarMessage(
   }
 
   // ==========================================================
-  // 2. XAI
+  // 2. GEMINI
   // ==========================================================
 
-  if (
-    XAI_API_KEY &&
-    !xaiDisabled
-  ) {
-    const result =
-      await classifyWithXAI(
-        text
-      );
+  if (gemini && !geminiDisabled) {
+    const result = await classifyWithGemini(text);
 
-    if (
-      result === "YES" ||
-      result === "NO"
-    ) {
+    if (result === "YES" || result === "NO") {
       console.log(
-        `[AI] Результат від xAI: ${result}`
+        `[AI] Результат від Gemini: ${result}`
       );
 
       return result;
     }
   } else {
     console.log(
-      "[AI] xAI пропущено — API key відсутній/вимкнений"
+      "[AI] Gemini пропущено — ключ відсутній/вимкнений"
     );
   }
 
@@ -1622,6 +1500,20 @@ async function classifyWarMessage(
     console.log(
       "[AI] OpenRouter пропущено — недоступний"
     );
+  }
+
+  // Не втрачаємо повідомлення про ціль у суміжному районі/напрямку,
+  // якщо всі безкоштовні AI недоступні. Пост буде позначений як суміжний напрямок.
+  if (
+    local.reason === "nearby-area threat candidate" ||
+    local.reason === "nearby-area status candidate" ||
+    local.reason === "regional approach route candidate"
+  ) {
+    console.log(
+      "[LOCAL] AI недоступні — обережно публікуємо ціль із суміжного району"
+    );
+
+    return "YES";
   }
 
   console.log(
@@ -2412,9 +2304,9 @@ app.listen(
     );
 
     console.log(
-      "xAI:",
-      XAI_API_KEY
-        ? "READY"
+      "Gemini:",
+      gemini && !geminiDisabled
+        ? `READY (${ACTIVE_GEMINI_MODEL})`
         : "OFF"
     );
 
